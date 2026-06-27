@@ -1,6 +1,7 @@
 import os
-import asyncio
 import datetime
+import asyncio
+import aiosqlite
 
 from telegram import (
     Update,
@@ -16,24 +17,23 @@ from telegram.ext import (
     filters
 )
 
-from db import init_db, add_user, get_channel, add_referral
+from db import init_db, add_user, get_channel, add_referral, set_channel, DB_NAME
 
 
-# ---------------- ENV ----------------
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7983838654"))
+# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7983838654"))
 
 
-# ---------------- INIT ----------------
+# ================= INIT =================
 async def post_init(app: Application):
     await init_db()
-    print("✅ Database initialized")
+    print("✅ DB initialized")
 
 
-# ---------------- START ----------------
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
+    user_id = update.effective_user.id
 
     await add_user(user_id, str(datetime.datetime.utcnow()))
     await add_referral(user_id)
@@ -47,14 +47,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([KeyboardButton("⚙ Admin Panel")])
 
     await update.message.reply_text(
-        "👋 Welcome to Creatmenu Bot System\n"
-        "Manage your bots easily.",
+        "👋 Welcome to Creatmenu Bot System",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 
-# ---------------- CHANNEL CHECK ----------------
-async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+# ================= FORCE JOIN =================
+async def check_join(context, user_id):
     channel = await get_channel()
 
     if not channel:
@@ -62,59 +61,25 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id
 
     try:
         member = await context.bot.get_chat_member(channel, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            return True
-        return False
+        return member.status in ["member", "administrator", "creator"]
     except:
         return True
 
 
-# ---------------- MESSAGE HANDLER ----------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user_id = update.effective_user.id
+# ================= DB HELPERS =================
+async def get_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+        users = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
+        bots = await (await db.execute("SELECT COUNT(*) FROM bots")).fetchone()
+        banned = await (await db.execute("SELECT COUNT(*) FROM bots WHERE is_banned=1")).fetchone()
 
-    # FORCE JOIN SYSTEM
-    ok = await check_join(update, context, user_id)
-    if not ok:
-        channel = await get_channel()
-        await update.message.reply_text(
-            f"⚠ Please join our channel first:\n{channel}"
-        )
-        return
-
-    # BASIC MENU ROUTES
-    if text == "➕ Add Bot":
-        await update.message.reply_text("📩 Send your bot token to add bot...")
-        return
-
-    if text == "🗑 Delete Bot":
-        await update.message.reply_text("🗑 Send bot ID to delete...")
-        return
-
-    if text == "🤖 My Bots":
-        await update.message.reply_text("📊 Loading your bots...")
-        return
-
-    if text == "⚙ Admin Panel" and user_id == ADMIN_ID:
-        await update.message.reply_text("⚙ Admin Panel opening...")
-        return
-
-    await update.message.reply_text("❌ DON'T UNDERSTAND")
-
-from telegram import ReplyKeyboardMarkup, KeyboardButton
+        return users[0], bots[0], banned[0]
 
 
-# ---------------- ADMIN PANEL ----------------
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if user_id != ADMIN_ID:
-        return
-
+# ================= ADMIN PANEL =================
+async def admin_panel(update, context):
     keyboard = [
         [KeyboardButton("📊 Stats"), KeyboardButton("📢 Broadcast")],
-        [KeyboardButton("📢 Broadcast Main Bot")],
         [KeyboardButton("📡 Channel Post"), KeyboardButton("🗑 Delete Channel Post")],
         [KeyboardButton("🚫 Ban Bot"), KeyboardButton("✅ Unban Bot")],
         [KeyboardButton("⬅ Back")]
@@ -126,191 +91,91 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ---------------- ADMIN ACTION ROUTER ----------------
-async def admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= MAIN HANDLER =================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
 
-    if user_id != ADMIN_ID:
+    # FORCE JOIN
+    if not await check_join(context, user_id):
+        channel = await get_channel()
+        await update.message.reply_text(f"⚠ Join first: {channel}")
         return
 
-    # BACK
-    if text == "⬅ Back":
-        await start(update, context)
+    # ================= USER MENU =================
+    if text == "➕ Add Bot":
+        await update.message.reply_text("📩 Send bot token")
         return
 
-    # STATS (simple version for now)
-    if text == "📊 Stats":
-        await update.message.reply_text(
-            "📊 System Stats:\n"
-            "- Users: loading...\n"
-            "- Bots: loading...\n"
-            "- Videos: loading...\n"
-        )
+    if text == "🗑 Delete Bot":
+        await update.message.reply_text("🗑 Send bot ID")
         return
 
-    # BROADCAST
-    if text == "📢 Broadcast":
-        await update.message.reply_text(
-            "📢 Send message / media to broadcast to ALL bots users."
-        )
+    if text == "🤖 My Bots":
+        await update.message.reply_text("📊 Loading bots...")
         return
 
-    # MAIN BOT BROADCAST
-    if text == "📢 Broadcast Main Bot":
-        await update.message.reply_text(
-            "📢 Send message for MAIN bot users only."
-        )
+    # ================= ADMIN OPEN =================
+    if text == "⚙ Admin Panel" and user_id == ADMIN_ID:
+        await admin_panel(update, context)
         return
 
-    # CHANNEL POST
-    if text == "📡 Channel Post":
-        await update.message.reply_text(
-            "📡 Send channel username (e.g @channel)"
-        )
-        return
+    # ================= ADMIN ACTIONS =================
+    if user_id == ADMIN_ID:
 
-    if text == "🗑 Delete Channel Post":
-        await update.message.reply_text(
-            "🗑 Channel restriction removed."
-        )
-        return
+        if text == "📊 Stats":
+            users, bots, banned = await get_stats()
+            await update.message.reply_text(
+                f"📊 STATS\nUsers: {users}\nBots: {bots}\nBanned: {banned}"
+            )
+            return
 
-    # BAN / UNBAN PLACEHOLDER
-    if text == "🚫 Ban Bot":
-        await update.message.reply_text(
-            "🚫 Send Bot ID to ban"
-        )
-        return
+        if text == "📡 Channel Post":
+            await update.message.reply_text("Send channel @username")
+            return
 
-    if text == "✅ Unban Bot":
-        await update.message.reply_text(
-            "✅ Send Bot ID to unban"
-        )
-        return
+        if text == "🗑 Delete Channel Post":
+            await set_channel("")
+            await update.message.reply_text("🗑 Channel removed")
+            return
 
-import aiosqlite
-from db import DB_NAME, set_channel, get_channel
+        if text == "🚫 Ban Bot":
+            await update.message.reply_text("Send: BAN <id>")
+            return
 
+        if text == "✅ Unban Bot":
+            await update.message.reply_text("Send: UNBAN <id>")
+            return
 
-# ---------------- REAL STATS ----------------
-async def get_stats():
-    async with aiosqlite.connect(DB_NAME) as db:
+        if text.startswith("@"):
+            await set_channel(text)
+            await update.message.reply_text(f"📡 Channel set {text}")
+            return
 
-        users = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
-        bots = await (await db.execute("SELECT COUNT(*) FROM bots")).fetchone()
-        banned = await (await db.execute("SELECT COUNT(*) FROM bots WHERE is_banned=1")).fetchone()
-
-        return {
-            "users": users[0],
-            "bots": bots[0],
-            "banned": banned[0]
-        }
-
-
-# ---------------- BAN / UNBAN ----------------
-async def ban_unban_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text.startswith("BAN "):
-        try:
-            bot_id = int(text.split(" ")[1])
+        if text.startswith("BAN "):
+            bot_id = int(text.split()[1])
             async with aiosqlite.connect(DB_NAME) as db:
                 await db.execute("UPDATE bots SET is_banned=1 WHERE id=?", (bot_id,))
                 await db.commit()
+            await update.message.reply_text("🚫 Banned")
+            return
 
-            await update.message.reply_text("🚫 Bot banned successfully")
-        except:
-            await update.message.reply_text("❌ Invalid bot ID")
-
-        return True
-
-    if text.startswith("UNBAN "):
-        try:
-            bot_id = int(text.split(" ")[1])
+        if text.startswith("UNBAN "):
+            bot_id = int(text.split()[1])
             async with aiosqlite.connect(DB_NAME) as db:
                 await db.execute("UPDATE bots SET is_banned=0 WHERE id=?", (bot_id,))
                 await db.commit()
+            await update.message.reply_text("✅ Unbanned")
+            return
 
-            await update.message.reply_text("✅ Bot unbanned successfully")
-        except:
-            await update.message.reply_text("❌ Invalid bot ID")
-
-        return True
-
-    return False
+    # ================= DEFAULT =================
+    await update.message.reply_text("❌ DON'T UNDERSTAND")
 
 
-# ---------------- CHANNEL SET / DELETE ----------------
-async def channel_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text.startswith("@"):
-        await set_channel(text)
-        await update.message.reply_text(f"📡 Channel set: {text}")
-        return True
-
-    if text == "DELETE CHANNEL":
-        await set_channel("")
-        await update.message.reply_text("🗑 Channel removed")
-        return True
-
-    return False
-
-
-# ---------------- BROADCAST CORE (PLACEHOLDER READY) ----------------
-async def broadcast_all(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        users = await db.execute("SELECT user_id FROM users")
-        rows = await users.fetchall()
-
-        for row in rows:
-            try:
-                await context.bot.send_message(chat_id=row[0], text=message)
-            except:
-                pass
-
-    await update.message.reply_text("📢 Broadcast sent to all users")
-
-
-# ---------------- ADMIN STATS DISPLAY ----------------
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats = await get_stats()
-
-    text = f"""
-📊 SYSTEM STATS
-
-👥 Users: {stats['users']}
-🤖 Bots: {stats['bots']}
-🚫 Banned Bots: {stats['banned']}
-"""
-
-    await update.message.reply_text(text)
-
-
-# ---------------- INTEGRATION HOOK (ADD TO ROUTER) ----------------
-async def admin_extra_routes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Add this into handle_message BEFORE default response
-    """
-
-    if await ban_unban_router(update, context):
-        return True
-
-    if await channel_router(update, context):
-        return True
-
-    if update.message.text == "📊 Stats":
-        await show_stats(update, context)
-        return True
-
-    return False
-
-
-# ---------------- MAIN ----------------
+# ================= MAIN =================
 def main():
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN not set in Railway environment variables")
+        print("❌ BOT_TOKEN missing")
         return
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
@@ -318,7 +183,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🤖 Bot is running...")
+    print("🤖 Bot running...")
     app.run_polling()
 
 

@@ -102,6 +102,210 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("❌ DON'T UNDERSTAND")
 
+from telegram import ReplyKeyboardMarkup, KeyboardButton
+
+
+# ---------------- ADMIN PANEL ----------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+        return
+
+    keyboard = [
+        [KeyboardButton("📊 Stats"), KeyboardButton("📢 Broadcast")],
+        [KeyboardButton("📢 Broadcast Main Bot")],
+        [KeyboardButton("📡 Channel Post"), KeyboardButton("🗑 Delete Channel Post")],
+        [KeyboardButton("🚫 Ban Bot"), KeyboardButton("✅ Unban Bot")],
+        [KeyboardButton("⬅ Back")]
+    ]
+
+    await update.message.reply_text(
+        "⚙ Admin Panel",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+
+
+# ---------------- ADMIN ACTION ROUTER ----------------
+async def admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+
+    if user_id != ADMIN_ID:
+        return
+
+    # BACK
+    if text == "⬅ Back":
+        await start(update, context)
+        return
+
+    # STATS (simple version for now)
+    if text == "📊 Stats":
+        await update.message.reply_text(
+            "📊 System Stats:\n"
+            "- Users: loading...\n"
+            "- Bots: loading...\n"
+            "- Videos: loading...\n"
+        )
+        return
+
+    # BROADCAST
+    if text == "📢 Broadcast":
+        await update.message.reply_text(
+            "📢 Send message / media to broadcast to ALL bots users."
+        )
+        return
+
+    # MAIN BOT BROADCAST
+    if text == "📢 Broadcast Main Bot":
+        await update.message.reply_text(
+            "📢 Send message for MAIN bot users only."
+        )
+        return
+
+    # CHANNEL POST
+    if text == "📡 Channel Post":
+        await update.message.reply_text(
+            "📡 Send channel username (e.g @channel)"
+        )
+        return
+
+    if text == "🗑 Delete Channel Post":
+        await update.message.reply_text(
+            "🗑 Channel restriction removed."
+        )
+        return
+
+    # BAN / UNBAN PLACEHOLDER
+    if text == "🚫 Ban Bot":
+        await update.message.reply_text(
+            "🚫 Send Bot ID to ban"
+        )
+        return
+
+    if text == "✅ Unban Bot":
+        await update.message.reply_text(
+            "✅ Send Bot ID to unban"
+        )
+        return
+
+import aiosqlite
+from db import DB_NAME, set_channel, get_channel
+
+
+# ---------------- REAL STATS ----------------
+async def get_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+
+        users = await (await db.execute("SELECT COUNT(*) FROM users")).fetchone()
+        bots = await (await db.execute("SELECT COUNT(*) FROM bots")).fetchone()
+        banned = await (await db.execute("SELECT COUNT(*) FROM bots WHERE is_banned=1")).fetchone()
+
+        return {
+            "users": users[0],
+            "bots": bots[0],
+            "banned": banned[0]
+        }
+
+
+# ---------------- BAN / UNBAN ----------------
+async def ban_unban_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text.startswith("BAN "):
+        try:
+            bot_id = int(text.split(" ")[1])
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("UPDATE bots SET is_banned=1 WHERE id=?", (bot_id,))
+                await db.commit()
+
+            await update.message.reply_text("🚫 Bot banned successfully")
+        except:
+            await update.message.reply_text("❌ Invalid bot ID")
+
+        return True
+
+    if text.startswith("UNBAN "):
+        try:
+            bot_id = int(text.split(" ")[1])
+            async with aiosqlite.connect(DB_NAME) as db:
+                await db.execute("UPDATE bots SET is_banned=0 WHERE id=?", (bot_id,))
+                await db.commit()
+
+            await update.message.reply_text("✅ Bot unbanned successfully")
+        except:
+            await update.message.reply_text("❌ Invalid bot ID")
+
+        return True
+
+    return False
+
+
+# ---------------- CHANNEL SET / DELETE ----------------
+async def channel_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text.startswith("@"):
+        await set_channel(text)
+        await update.message.reply_text(f"📡 Channel set: {text}")
+        return True
+
+    if text == "DELETE CHANNEL":
+        await set_channel("")
+        await update.message.reply_text("🗑 Channel removed")
+        return True
+
+    return False
+
+
+# ---------------- BROADCAST CORE (PLACEHOLDER READY) ----------------
+async def broadcast_all(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        users = await db.execute("SELECT user_id FROM users")
+        rows = await users.fetchall()
+
+        for row in rows:
+            try:
+                await context.bot.send_message(chat_id=row[0], text=message)
+            except:
+                pass
+
+    await update.message.reply_text("📢 Broadcast sent to all users")
+
+
+# ---------------- ADMIN STATS DISPLAY ----------------
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stats = await get_stats()
+
+    text = f"""
+📊 SYSTEM STATS
+
+👥 Users: {stats['users']}
+🤖 Bots: {stats['bots']}
+🚫 Banned Bots: {stats['banned']}
+"""
+
+    await update.message.reply_text(text)
+
+
+# ---------------- INTEGRATION HOOK (ADD TO ROUTER) ----------------
+async def admin_extra_routes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Add this into handle_message BEFORE default response
+    """
+
+    if await ban_unban_router(update, context):
+        return True
+
+    if await channel_router(update, context):
+        return True
+
+    if update.message.text == "📊 Stats":
+        await show_stats(update, context)
+        return True
+
+    return False
+
 
 # ---------------- MAIN ----------------
 def main():
